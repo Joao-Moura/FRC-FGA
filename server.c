@@ -31,21 +31,48 @@ sala salas[MAX_SALAS];
 
 
 void
-envia_msg (int sd, int sala_id, int server_sd) {
+envia_msg (int sd, int server_sd, int sala_id) {
+    int cliente_id;
+    for (cliente_id = 0; cliente_id < salas[sala_id].limite; cliente_id++)
+        if (salas[sala_id].clientes[cliente_id].cliente_sd == sd)
+            break;
+
     printf("Enviando mensagem do file descriptor %d na sala %d\n", sd, sala_id);
     // Para cada file descriptor
     for (int j = 0; j <= fdmax; j++)
         // checa se ele esta no cesto do master
         if (FD_ISSET(j, &salas[sala_id].sala_fd))
             // e checa se o valor nao e o descritor de si mesmo
-            if (j != sd && j != server_sd)
+            if (j != sd && j != server_sd) {
                 // por fim envia a mensagem para aquele socket descritor
-                send(j, buf, nbytes, 0);
+                char mensagem[500] = "[";
+                strcat(mensagem, salas[sala_id].clientes[cliente_id].nome);
+                strcat(mensagem, "] => ");
+                strcat(mensagem, buf);
+                send(j, mensagem, 500, 0);
+            }
 }
 
 
 void
-executa_comando (int sd) {
+sair_da_sala (int sd, int sala_id) {
+    // Ao sair da sala, deve-se diminuir a quantidade de clientes
+    // retirar o descritor da master e da sala.
+    salas[sala_id].quantidade--;
+    FD_CLR(sd, &master);
+    FD_CLR(sd, &salas[sala_id].sala_fd);
+
+    // E caso a quantidade fique igual 0, deve-se fechar a mesma
+    // deixando-a inativa e desalocando o vetor de clientes
+    if (salas[sala_id].quantidade == 0) {
+        free(salas[sala_id].clientes);
+        salas[sala_id].ativo = 0;
+    }
+}
+
+
+void
+executa_comando (int sd, int sala_id) {
     char resp_buf[256];
 
     // Se o recv retornar 0 ou a mensagem foi de sair
@@ -55,16 +82,18 @@ executa_comando (int sd) {
         strcpy(resp_buf, "Cliente Desconectado\n");
         send(sd, resp_buf, strlen(resp_buf), 0);
         close(sd);
-        FD_CLR(sd, &master);
+        sair_da_sala(sd, sala_id);
     }
 }
 
 
 void
 inicia_servidor () {
+    // Inicializacao do servidor, zerando todas as salas
     for (int i = 0; i < MAX_SALAS; i++) {
         FD_ZERO(&salas[i].sala_fd);
         salas[i].limite = 0;
+        salas[i].quantidade = 0;
         salas[i].ativo = 0;
     }
 }
@@ -72,14 +101,21 @@ inicia_servidor () {
 
 int
 cria_sala (int limite) {
+    // Para criar uma sala, deve-se encontrar a primeira sala
+    // vazia (ativo = 0) setar como ativa e atualizar seu limite
     int sala;
     for (sala = 0; sala < MAX_SALAS; sala++)
         if (salas[sala].ativo == 0)
             break;
 
+    printf("Sala escolhidaaaa: %d\n", sala);
     salas[sala].ativo = 1;
     salas[sala].limite = limite;
     salas[sala].clientes = malloc(limite * sizeof(cliente));
+
+    // Apos isso, deve-se instanciar o seu vetor de clientes
+    // e desativar todos os presentes. Tambem e necessario 
+    // retornar o valor da sala
     for (int i = 0; i < limite; i++)
         salas[sala].clientes[i].ativo = 0;
 
@@ -89,13 +125,18 @@ cria_sala (int limite) {
 
 void
 inserir_na_sala(int sd, int sala, char nome[], int tam_nome) {
-    salas[sala].quantidade++;
+    // Para inserir na sala, deve-se aumentar a quantidade, adicionar
+    // o descritor no cesto da sala, encontra uma posição na sala
+    // que esteja vazia (cliente.ativo = 0) e insere seus atributos
+    // socket descriptor, ativo e nome
     FD_SET(sd, &salas[sala].sala_fd);
+    salas[sala].quantidade++;
     for (int i = 0; i < salas[sala].limite; i++) {
         if (salas[sala].clientes[i].ativo == 0) {
-            salas[sala].clientes[i].ativo = 1;
             salas[sala].clientes[i].cliente_sd = sd;
+            salas[sala].clientes[i].ativo = 1;
             strncpy(salas[sala].clientes[i].nome, nome, tam_nome);
+            break;
         }
     }
 }
@@ -152,17 +193,22 @@ main (int argc, char *argv[]) {
                     newfd = accept(sd, (struct sockaddr *)&remoteaddr, &addrlen);
                     FD_SET(newfd, &master);
 
+                    // Recebe nome do usuario e sala que quer entrar
                     int limite, tam_nome;
                     char nome[256];
-                    // send(i, salas, sizeof(sala) * MAX_SALAS, 0);
-                    tam_nome = recv(newfd, nome, sizeof(char) * 256, 0);
-                    recv(newfd, &sala, sizeof(int), 0);
-                    printf("%d\n", sala);
+                    tam_nome = recv(newfd, nome, 256, 0);
+                    tam_nome -= 2;
+                    recv(newfd, buf, 256, 0);
+                    sala = atoi(buf);
                     
+                    // Se a sala for -1, cria uma nova com o limite informado
                     if (sala == -1) {
-                        recv(newfd, &limite, sizeof(int), 0);
+                        recv(newfd, buf, 256, 0);
+                        limite = atoi(buf);
                         sala = cria_sala(limite);
                     }
+
+                    // De qualquer forma insere ele na sala nova ou existente
                     inserir_na_sala(newfd, sala, nome, tam_nome);
 
                     // Se o valor do sd for maior que o atual (mais coisas no cesto)
@@ -173,20 +219,27 @@ main (int argc, char *argv[]) {
                 else {
                     // Se nao for o descritor do socket, cria um buffer, recebe a mensagem
                     // e a retransmite por todos os sockets conectados
-                    recv(i, &sala, sizeof(int), 0);
                     memset(&buf, 0, sizeof(buf));
                     nbytes = recv(i, buf, sizeof(buf), 0);
+
+                    // Encontra a sala que o descritor do socker se encontra
+                    int sala_id;
+                    for (sala_id = 0; sala_id < MAX_SALAS; sala_id++)
+                        if (FD_ISSET(i, &salas[sala_id].sala_fd))
+                            break;
 
                     // Desconexao forcada
                     if (nbytes == 0) {
                         printf("Desconectando forcadamente o descritor %d\n", i);
-                        FD_CLR(i, &master);
+                        sair_da_sala(i, sala_id);
                     }
 
+                    // Caso o primeiro caracter da mensagem seja uma / executa comando
                     if (buf[0] == '/')
-                        executa_comando(i);
+                        executa_comando(i, sala_id);
+                    // Caso não, encaminha a mensagem na sala
                     else
-                        envia_msg(i, sala, sd);
+                        envia_msg(i, sd, sala_id);
                 }
             }
         }
