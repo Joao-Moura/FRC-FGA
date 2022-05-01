@@ -31,12 +31,7 @@ sala salas[MAX_SALAS];
 
 
 void
-envia_msg (int sd, int server_sd, int sala_id) {
-    int cliente_id;
-    for (cliente_id = 0; cliente_id < salas[sala_id].limite; cliente_id++)
-        if (salas[sala_id].clientes[cliente_id].cliente_sd == sd)
-            break;
-
+envia_msg (int sd, int server_sd, int sala_id, int cliente_id) {
     printf("Enviando mensagem do file descriptor %d na sala %d\n", sd, sala_id);
     // Para cada file descriptor
     for (int j = 0; j <= fdmax; j++)
@@ -55,11 +50,13 @@ envia_msg (int sd, int server_sd, int sala_id) {
 
 
 void
-sair_da_sala (int sd, int sala_id) {
+sair_da_sala (int sd, int sala_id, int cliente_id, int retirar_master) {
     // Ao sair da sala, deve-se diminuir a quantidade de clientes
     // retirar o descritor da master e da sala.
+    salas[sala_id].clientes[cliente_id].ativo = 0;
     salas[sala_id].quantidade--;
-    FD_CLR(sd, &master);
+    if (retirar_master == 1)
+        FD_CLR(sd, &master);
     FD_CLR(sd, &salas[sala_id].sala_fd);
 
     // E caso a quantidade fique igual 0, deve-se fechar a mesma
@@ -67,22 +64,6 @@ sair_da_sala (int sd, int sala_id) {
     if (salas[sala_id].quantidade == 0) {
         free(salas[sala_id].clientes);
         salas[sala_id].ativo = 0;
-    }
-}
-
-
-void
-executa_comando (int sd, int sala_id) {
-    char resp_buf[256];
-
-    // Se o recv retornar 0 ou a mensagem foi de sair
-    // retira o socket descriptor do cesto
-    if (strncmp(buf+1, "sair", 4) == 0) {
-        printf("Desconectando descritor %d\n", sd);
-        strcpy(resp_buf, "Cliente Desconectado\n");
-        send(sd, resp_buf, strlen(resp_buf), 0);
-        close(sd);
-        sair_da_sala(sd, sala_id);
     }
 }
 
@@ -108,7 +89,6 @@ cria_sala (int limite) {
         if (salas[sala].ativo == 0)
             break;
 
-    printf("Sala escolhidaaaa: %d\n", sala);
     salas[sala].ativo = 1;
     salas[sala].limite = limite;
     salas[sala].clientes = malloc(limite * sizeof(cliente));
@@ -138,6 +118,54 @@ inserir_na_sala(int sd, int sala, char nome[], int tam_nome) {
             strncpy(salas[sala].clientes[i].nome, nome, tam_nome);
             break;
         }
+    }
+}
+
+
+void
+executa_comando (int sd, int sala_id, int cliente_id) {
+    char resp_buf[256];
+
+    // Se o recv retornar 0 ou a mensagem foi de sair
+    // retira o socket descriptor do cesto
+    if (strncmp(buf+1, "sair", 4) == 0) {
+        printf("Desconectando descritor %d\n", sd);
+        strcpy(resp_buf, "Cliente Desconectado\n");
+        send(sd, resp_buf, strlen(resp_buf), 0);
+        close(sd);
+        sair_da_sala(sd, sala_id, cliente_id, 1);
+    }
+
+    // Caso o comando seja listar, deve-se passar por todos os
+    // clientes ativos da sala e lista-los enviando-os com sends
+    if (strncmp(buf+1, "listar", 6) == 0) {
+        send(sd, "\n===== Clientes Conectados Na Sala =====", 40, 0);
+        for (int i = 0; i < salas[sala_id].limite; i++) {
+            cliente c = salas[sala_id].clientes[i];
+            if (c.ativo == 1 && c.cliente_sd != sd) {
+                char nome[] = "\n";
+                strcat(nome, c.nome);
+                send(sd, nome, strlen(nome), 0);
+            }
+            else if (c.ativo == 1 && c.cliente_sd == sd) { 
+                char nome[] = "\n[";
+                strcat(nome, c.nome);
+                strcat(nome, "]");
+                send(sd, nome, strlen(nome), 0);
+            }
+        }
+        send(sd, "\n\n", 2, 0);
+    }
+
+    // Caso o cliente queira trocar de sala, deve-se executar duas
+    // rotinas, a de sair de uma sala e a de inserir em um sala
+    if (strncmp(buf+1, "trocar_sala", 11) == 0) {
+        recv(sd, buf, 256, 0);
+        int nova_sala = atoi(buf);
+        char nome[256];
+        strcpy(nome, salas[sala_id].clientes[cliente_id].nome);
+        sair_da_sala(sd, sala_id, cliente_id, 0);
+        inserir_na_sala(sd, nova_sala, nome, strlen(nome));
     }
 }
 
@@ -228,18 +256,24 @@ main (int argc, char *argv[]) {
                         if (FD_ISSET(i, &salas[sala_id].sala_fd))
                             break;
 
+                    // Encontra o id do cliente na sala atual do mesmo
+                    int cliente_id;
+                    for (cliente_id = 0; cliente_id < salas[sala_id].limite; cliente_id++)
+                        if (salas[sala_id].clientes[cliente_id].cliente_sd == i)
+                            break;
+
                     // Desconexao forcada
                     if (nbytes == 0) {
                         printf("Desconectando forcadamente o descritor %d\n", i);
-                        sair_da_sala(i, sala_id);
+                        sair_da_sala(i, sala_id, cliente_id, 1);
                     }
 
                     // Caso o primeiro caracter da mensagem seja uma / executa comando
                     if (buf[0] == '/')
-                        executa_comando(i, sala_id);
+                        executa_comando(i, sala_id, cliente_id);
                     // Caso não, encaminha a mensagem na sala
                     else
-                        envia_msg(i, sd, sala_id);
+                        envia_msg(i, sd, sala_id, cliente_id);
                 }
             }
         }
