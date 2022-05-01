@@ -51,6 +51,7 @@ envia_msg (int sd, int server_sd, int sala_id, int cliente_id) {
 
 void
 sair_da_sala (int sd, int sala_id, int cliente_id, int retirar_master) {
+    printf("File descriptor %d saindo na sala %d\n", sd, sala_id);
     // Ao sair da sala, deve-se diminuir a quantidade de clientes
     // retirar o descritor da master e da sala.
     salas[sala_id].clientes[cliente_id].ativo = 0;
@@ -99,23 +100,25 @@ cria_sala (int limite) {
     for (int i = 0; i < limite; i++)
         salas[sala].clientes[i].ativo = 0;
 
+    printf("Nova sala %d criada\n", sala);
     return sala;
 }
 
 
 void
-inserir_na_sala(int sd, int sala, char nome[], int tam_nome) {
+inserir_na_sala(int sd, int sala_id, char nome[], int tam_nome) {
+    printf("File descriptor %d entrando na sala %d\n", sd, sala_id);
     // Para inserir na sala, deve-se aumentar a quantidade, adicionar
     // o descritor no cesto da sala, encontra uma posição na sala
     // que esteja vazia (cliente.ativo = 0) e insere seus atributos
     // socket descriptor, ativo e nome
-    FD_SET(sd, &salas[sala].sala_fd);
-    salas[sala].quantidade++;
-    for (int i = 0; i < salas[sala].limite; i++) {
-        if (salas[sala].clientes[i].ativo == 0) {
-            salas[sala].clientes[i].cliente_sd = sd;
-            salas[sala].clientes[i].ativo = 1;
-            strncpy(salas[sala].clientes[i].nome, nome, tam_nome);
+    FD_SET(sd, &salas[sala_id].sala_fd);
+    salas[sala_id].quantidade++;
+    for (int i = 0; i < salas[sala_id].limite; i++) {
+        if (salas[sala_id].clientes[i].ativo == 0) {
+            salas[sala_id].clientes[i].cliente_sd = sd;
+            salas[sala_id].clientes[i].ativo = 1;
+            strncpy(salas[sala_id].clientes[i].nome, nome, tam_nome);
             break;
         }
     }
@@ -124,6 +127,8 @@ inserir_na_sala(int sd, int sala, char nome[], int tam_nome) {
 
 void
 executa_comando (int sd, int sala_id, int cliente_id) {
+    buf[strlen(buf) - 2] = '\0';
+    printf("Comando \"%s\" acionado na sala %d pelo file descriptor %d\n", buf, sd, sala_id);
     char resp_buf[256];
 
     // Se o recv retornar 0 ou a mensagem foi de sair
